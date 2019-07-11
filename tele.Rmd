@@ -1,0 +1,394 @@
+---
+title: "Telecom Churn"
+author: "Amit Maity"
+date: "August 10, 2018"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Business Problem
+
+The telecom industry continues to face growing pricing pressure worldwide. While regional differences apply, wireless penetration is reaching a saturation point across multiple markets. In addition, the longstanding ability to differentiate products and services based on handset selection and network quality is disappearing, and product life cycles are shortening. Simultaneously, wire line businesses are facing increasing competition from cable operators and a rising risk of disruption from OTT players. All of these powerful trends are forcing telecom companies to respond through more competitive offers, bundles, and price cuts.
+
+Given these challenging industry dynamics, managing the customer base to reduce churn should be among any senior telecom executives highest priorities. And our work with telecom companies around the world reveals that those companies that implement a comprehensive, analytics-based approach to base management can reduce their churn by as much as 15%.
+
+## Exploratory Data Analysis
+
+```{r message = FALSE, warning=FALSE}
+library(dplyr)
+library(corrplot)
+library(car)
+library(randomForest)
+library(caret) 
+library(pROC)
+library(e1071)
+library(lattice)
+library(ggplot2)
+library(InformationValue)
+library(rpart)
+library(rpart.plot)
+```
+
+
+
+```{r }
+
+telecom_train <- read.csv("E:/PGD Data Science/PROJECT/Train_tele.csv")
+telecom_test <- read.csv("E:/PGD Data Science/PROJECT/Test_tele.csv")
+colnames(telecom_train)
+head(telecom_train)
+```
+
+
+
+
+
+Dummy variable for categorical value
+
+```{r}
+
+telecom_train$international_plan <- ifelse(telecom_train$international.plan=="yes",1,0)
+telecom_train$vmail_plan <- ifelse(telecom_train$voice.mail.plan=="yes",1,0)
+```
+
+
+State,Account.length,Area.code, Phone.number are not relevant to our analysis. Will remove these columns and stored in a new variable called final_data.
+
+```{r}
+final_data = telecom_train[-c(1,2,3,4,5,6)]
+colnames(final_data) <-c("number_vmail_messages","total_day_calls","total_day_charge","total_eve_calls","total_eve_charge", "total_night_calls", "total_night_charge", "total_intl_calls","total_intl_charge", "customer_service_calls", "churn", "international_plan", "vmail_plan")
+
+```
+```{r warning=FALSE}
+filter(final_data,final_data$vmail_plan == 0,final_data$number_vmail_messages > 0)
+
+```
+
+
+One voice messages value is missing. We found a close relation between vmail_plan and number_vmail_messages. It is intuitive that when customer is opting voice mail plan then only 'number_vmail_messages' field has some non-zero values.So here we will replace zero to the missing vmail messages value
+
+```{r}
+filter(select(final_data,-churn),is.na(final_data$number_vmail_messages ))
+final_data$number_vmail_messages[is.na(final_data$number_vmail_messages)] = 0
+summary(final_data$number_vmail_messages)
+```
+
+```{r}
+par(mfrow=c(3,3))
+hist(final_data$total_day_calls, main="Total_Day_Calls")
+hist(final_data$total_day_charge, main="Total_Day_Charge")
+hist(final_data$total_eve_calls, main="Total_Eve_Calls")
+hist(final_data$total_eve_charge, main="Total_Eve_Charge")
+hist(final_data$total_night_calls, main="Total_Night_Calls")
+hist(final_data$total_night_charge, main="Total_Night_Charge")
+hist(final_data$total_intl_calls, main="Total_Intl_Calls")
+hist(final_data$total_intl_charge, main="Total_Intl_Charge")
+hist(final_data$customer_service_calls, main="Customer_Service_Calls")
+```
+
+From individual column's histogram, we observed total_day_calls, total_eve_calls, total_night_calls,total_intl_calls,customer_service_calls are normally distributed and discrete in nature. So we will do **median imputation**. And total_day_charge, total_eve_charge, total_night_charge, total_intl_charge are normally distributed and continuous in nature. So we will do **mean imputation**.
+
+
+```{r}
+final_data$total_day_calls[is.na(final_data$total_day_calls)] = 101
+final_data$total_day_charge[is.na(final_data$total_day_charge)] = 30.60
+final_data$total_eve_calls[is.na(final_data$total_eve_calls)] = 100
+final_data$total_eve_charge[is.na(final_data$total_eve_charge)] = 17.10
+final_data$total_night_calls[is.na(final_data$total_night_calls)] = 100
+final_data$total_night_charge[is.na(final_data$total_night_charge)] = 9
+final_data$total_intl_calls[is.na(final_data$total_intl_calls)] = 4
+final_data$total_intl_charge[is.na(final_data$total_intl_charge)] = 2.77
+final_data$customer_service_calls[is.na(final_data$customer_service_calls)] = 1
+
+```
+
+
+###Univariate Analysis 
+
+```{r}
+par(mfrow=c(3,3))
+boxplot(final_data$total_day_calls, main="Total_Day_Calls")
+boxplot(final_data$total_day_charge, main="Total_Day_Charge")
+boxplot(final_data$total_eve_calls, main="Total_Eve_Calls")
+boxplot(final_data$total_eve_charge, main="Total_Eve_Charge")
+boxplot(final_data$total_night_calls, main="Total_Night_Calls")
+boxplot(final_data$total_night_calls, main="Total_Night_Charge")
+boxplot(final_data$total_intl_calls, main="Total_Intl_Calls")
+boxplot(final_data$total_intl_charge, main="Total_Intl_Charge")
+boxplot(final_data$customer_service_calls, main="Customer_Service_Calls")
+
+```
+
+
+Based on the *boxplot* we are capping outliers at 2% & above 98%. After removal of outliers:
+
+```{r include=FALSE}
+quantile(final_data$total_day_calls,seq(0,1,0.02))
+final_data$total_day_calls<-ifelse(final_data$total_day_calls>=152,152,final_data$total_day_calls)
+final_data$total_day_calls<-ifelse(final_data$total_day_calls<=47,47,final_data$total_day_calls)
+final_data$total_day_charge<-ifelse(final_data$total_day_charge>=55,55,final_data$total_day_charge)
+final_data$total_day_charge<-ifelse(final_data$total_day_charge<=6.4,6.4,final_data$total_day_charge)
+final_data$total_eve_calls<-ifelse(final_data$total_eve_calls<=48,48,final_data$total_eve_calls)
+final_data$total_eve_calls<-ifelse(final_data$total_eve_calls>=152,152,final_data$total_eve_calls)
+final_data$total_intl_calls<-ifelse(final_data$total_intl_calls>=11,11,final_data$total_intl_calls)
+final_data$customer_service_calls<-ifelse(final_data$customer_service_calls>=5,5,final_data$customer_service_calls)
+
+
+```
+
+
+```{r echo=FALSE}
+par(mfrow=c(3,3))
+boxplot(final_data$total_day_calls, main="Total_Day_Calls")
+boxplot(final_data$total_day_charge, main="Total_Day_Charge")
+boxplot(final_data$total_eve_calls, main="Total_Eve_Calls")
+boxplot(final_data$total_eve_charge, main="Total_Eve_Charge")
+boxplot(final_data$total_night_calls, main="Total_Night_Calls")
+boxplot(final_data$total_night_calls, main="Total_Night_Charge")
+boxplot(final_data$total_intl_calls, main="Total_Intl_Calls")
+boxplot(final_data$total_intl_charge, main="Total_Intl_Charge")
+boxplot(final_data$customer_service_calls, main="Customer_Service_Calls")
+
+```
+
+```{r}
+boxplot(final_data$total_day_charge ~ final_data$churn, main="Boxplot for total_day_charge")
+boxplot(final_data$total_eve_charge ~ final_data$churn, main="Boxplot for total_eve_charge")
+boxplot(final_data$customer_service_calls ~ final_data$churn, main="Boxplot for customer_service_calls")
+
+```
+
+Its intuitive that Customer with high day charge and evening charge have left and obvious that customer with less satisfied have more customer_service_calls and chunred.
+
+
+
+
+
+###Bi-variant Analysis
+
+#####Scatter Plot
+```{r}
+scatterplot(final_data$total_intl_charge,final_data$churn)
+scatterplot(final_data$total_eve_charge,final_data$churn)
+scatterplot(final_data$total_night_calls,final_data$total_night_charge)
+
+```
+
+From above scatter plot, we can conclude with incease in total_intl_charge *(after 3)*, total_eve_charge *(after 20)* there is increase in churn.
+
+#####Correlation Plot
+```{r}
+corrplot(cor(final_data[,1:13]), method="circle")
+```
+
+
+Let divide data into Test and Train dataset
+
+```{r}
+set.seed(222)
+t=sample(1:nrow(final_data),0.7*nrow(final_data))
+t_train=final_data[t,]
+t_test=final_data[-t,]
+```
+
+#####Multi-collinearity Check
+```{r}
+
+library(car)
+mod<- lm(churn ~ ., data=t_train)
+t = vif(mod)
+sort(t, decreasing = T)
+```
+In above observations, number_vmail_messages & vmail_plan are highly correlated. We could choose any one of them.
+
+
+##Model Selection
+
+Telecom churn is a classification problem and *dependent variable* is **categorical/binomial** in nature. The dependent variable is either **YES** or **NO**, so could solve it by different supervised learning algoritms. Here we will use **Logistic Regression**, **Decision Tree**, **Random Forest** and **Naive Bayes** techniques to build a model and will findout the best one.
+
+###Logistic Regression
+```{r}
+mod1 <- glm(as.factor(churn) ~ ., family="binomial", data=t_train)
+summary(mod1)
+```
+
+Instead of removing all these variables one by one, we use the step function, which automatically calculated the best equation
+```{r}
+
+stpmod = step(mod1, direction = "both")
+formula(stpmod)
+summary(stpmod)
+```
+
+```{r}
+mod2 <- glm(formula = as.factor(churn) ~ total_day_calls + total_day_charge + 
+              total_eve_charge + total_night_charge + total_intl_calls + 
+              total_intl_charge + customer_service_calls + international_plan + 
+              vmail_plan, family = "binomial", data = t_train)
+summary(mod2)
+```
+
+Lets try to analyse the confusion matrix and model accuracy
+```{r}
+t_train$score=predict(mod2,newdata=t_train,type = "response")
+t_train$churn <- as.factor(t_train$churn)
+prediction<-ifelse(t_train$score>=0.6,TRUE,FALSE)
+prediction <- as.factor(prediction)
+confusionMatrix(prediction,t_train$churn)
+```
+
+
+Lets check the AUC and ROC
+
+```{r}
+t_train$churn1 <- ifelse(t_train$churn=="TRUE",1,0)
+plotROC(actuals = t_train$churn1,predictedScores = as.numeric(fitted(mod2)))
+ks_plot(actuals = t_train$churn1,predictedScores = as.numeric(fitted(mod2)))
+ks_stat(actuals = t_train$churn1,predictedScores = as.numeric(fitted(mod2)))
+```
+
+#####Model Validation with Test Data
+
+```{r}
+t_test$score= predict(mod2, t_test, type="response")
+t_test$churn <- as.factor(t_test$churn)
+test_pred<-ifelse(t_test$score>=0.65,TRUE,FALSE)
+test_pred <- as.factor(test_pred)
+confusionMatrix(test_pred,t_test$churn)
+```
+
+
+
+###Random Forest
+A commonly used class of ensemble algorithms are forests randomized trees. **Random Forest** algorithm is a supervised classification algorithm. As the name suggest, the algorithm creates the forest with a number of trees.
+
+```{r include=FALSE}
+set.seed(222)
+t=sample(1:nrow(final_data),0.7*nrow(final_data))
+t_train=final_data[t,]
+t_test=final_data[-t,]
+```
+
+```{r include=FALSE}
+telemdl1=randomForest(as.factor(churn)~. , data = t_train, do.trace=T)
+```
+
+*telemdl1=randomForest(as.factor(churn)~. , data = t_train, do.trace=T)*
+```{r warning=FALSE}
+telemdl1
+importance(telemdl1)
+varImpPlot(telemdl1)
+
+predtele1=predict(telemdl1,t_test)
+confusionMatrix(as.factor(predtele1),as.factor(t_test$churn))
+
+aucrf_test <- roc(as.numeric(t_test$churn), as.numeric(predtele1),  ci=TRUE)
+plotROC(as.numeric(t_test$churn), as.numeric(predtele1))
+plot(aucrf_test, ylim=c(0,1), print.thres=TRUE, main=paste('Random Forest AUC:',round(aucrf_test$auc[[1]],3)),col = 'blue')
+
+RFTABLE=table(predtele1,as.factor(t_test$churn))
+
+Error=(RFTABLE[1,2]+RFTABLE[2,1])/nrow(t_test)
+Error*100
+```
+
+###Decision Tree With Stratified Sampling
+
+Decision Trees are the popular and powerful tool used for classification and prediction purposes. it works for both categorical and continuous input and output variables. In this technique, we spilt the population or sample into two or more homogeneous sets based on most significant differentiator in input variables.
+
+
+#####Stratified Sampling
+```{r}
+
+tcom_data = final_data
+
+tcom_data$churn <- ifelse(tcom_data$churn=="TRUE",1,0)
+d=tcom_data[,"churn"] == "1"
+table(d)
+classone=tcom_data[d,]
+classzero = tcom_data[!d,]
+
+set.seed(1)
+d=sample(1:nrow(classone),floor(0.7*nrow(classone)))
+classonetrain=classone[d,]
+classonetest = classone[-d,]
+
+
+set.seed(1)
+d=sample(1:nrow(classzero),floor(0.7*nrow(classzero)))
+classzerotrain=classzero[d,]
+classzerotest = classzero[-d,]
+
+P1Index=which(names(tcom_data) %in% "churn")
+xtrain=rbind(classonetrain[,-P1Index] , classzerotrain[,-P1Index])
+xtest=rbind(classonetest[,-P1Index] , classzerotest[,-P1Index])
+
+ytrain=rbind(classonetrain[P1Index] , classzerotrain[P1Index])
+ytest=rbind(classonetest[P1Index] , classzerotest[P1Index])
+ytrain = unlist(ytrain)
+ytest = unlist(ytest)
+```
+
+#####Decision Tree
+```{r}
+set.seed(1)
+classTree=rpart(as.factor(ytrain)~. , method = "class", data = xtrain , control = rpart.control(minsplit = 20, cp=0.001))
+BestCP=classTree$cptable[which.min(classTree$cptable[,"xerror"]),"CP"]
+BestCP
+
+tree.prune=prune(classTree,cp=BestCP)
+prp(tree.prune,box.col = c("pink","palegreen3")[classTree$frame$yval])
+
+classTreeTrain=predict(tree.prune,xtrain)
+TrainClassify=apply(classTreeTrain, 1, which.max)
+classTreeMat=table(TrainClassify,ytrain)
+
+classTreeTest=predict(tree.prune,xtest,type = "class")
+confusionMatrix(classTreeTest,as.factor(ytest))
+
+Error=(classTreeMat[1,2]+classTreeMat[2,1])/nrow(xtrain)
+Error*100
+
+classTreeTest=predict(tree.prune,xtest)
+TestClassify=apply(classTreeTest, 1, which.max)
+classTreeTestMat=table(TestClassify,ytest)
+
+Error=(classTreeTestMat[1,2]+classTreeTestMat[2,1])/nrow(xtest)
+Error*100
+```
+
+###NaiveBayes Model
+
+It is a classification technique based on Bayes' Theorem with an assumption of *independence among predictors*. The algorithm learns the probability of an object with certain features belonging to a particular group/class.The class with highest probability is considered as the most likely class.In short, it is a **probabilistic classifier**. 
+
+```{r warning=FALSE}
+
+Bayes=naiveBayes(as.factor(ytrain)~. , data = xtrain)
+Bayes
+
+ConfMat=table(predict(Bayes,xtrain),ytrain)
+ConfMat
+
+Error=(ConfMat[1,2]+ConfMat[2,1])/nrow(xtrain)
+Error*100
+
+ConfMatTest=table(predict(Bayes,xtest),ytest)
+ConfMatTest
+confusionMatrix(predict(Bayes,xtest),as.factor(ytest))
+
+
+Error=(ConfMatTest[1,2]+ConfMatTest[2,1])/nrow(xtest)
+Error*100
+```
+
+##Summary of Model Performance
+
+
+##Appendix
+
